@@ -250,14 +250,23 @@ window.switchTab = (tabId) => {
         return;
     }
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-    document.getElementById('tab-' + tabId)?.classList.add('active');
+    const targetTab = document.getElementById('tab-' + tabId);
+    targetTab?.classList.add('active');
     document.querySelectorAll('.sidebar-nav-btn').forEach(b => {
         b.className = b.dataset.tab === tabId ? 
             "sidebar-nav-btn w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl transition-all bg-red-600 text-white shadow-sm cursor-pointer whitespace-nowrap" : 
             "sidebar-nav-btn w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl transition-all hover:bg-red-100 hover:text-red-700 cursor-pointer whitespace-nowrap";
     });
     if (tabId === 'mural') setTimeout(() => renderMural(), 50);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (tabId === 'admin' && targetTab) {
+        renderAdmin();
+        requestAnimationFrame(() => {
+            const top = targetTab.getBoundingClientRect().top + window.scrollY - 88;
+            window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+        });
+    } else {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 };
 
 window.openAdminModal = () => {
