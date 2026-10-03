@@ -1,72 +1,66 @@
 import { db, appId, escapeHTML, state } from './firebase-init.js';
 import { deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+function normalizeInstagramUrl(value) {
+    try {
+        const parsed = new URL(value || '');
+        if (!/^https?:$/.test(parsed.protocol)) return '';
+        if (!(parsed.hostname === 'instagram.com' || parsed.hostname.endsWith('.instagram.com'))) return '';
+        if (!/^\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/.test(parsed.pathname)) return '';
+        return 'https://www.instagram.com' + parsed.pathname.replace(/\/$/, '') + '/';
+    } catch (_) { return ''; }
+}
+
 export function renderGallery() {
     const grid = document.getElementById('gallery-grid');
     if (!grid) return;
-
+    if (!grid.dataset.deleteHandlerReady) {
+        grid.dataset.deleteHandlerReady = 'true';
+        grid.addEventListener('click', event => {
+            const button = event.target.closest('[data-gallery-delete]');
+            if (button) window.deleteGalleryPhoto(button.dataset.galleryDelete);
+        });
+    }
     if (!state.gallery.length) {
-        grid.innerHTML = `<div class="col-span-full bg-white/90 p-8 rounded-3xl text-center text-stone-400 border border-stone-200">Nenhum post cadastrado na galeria no momento.</div>`;
+        grid.innerHTML = '<div class="col-span-full bg-white/90 p-8 rounded-3xl text-center text-stone-400 border border-stone-200">Nenhum post cadastrado. Os posts adicionados pelo painel aparecerão aqui.</div>';
         return;
     }
-
     grid.innerHTML = state.gallery.map(g => {
-        const url = escapeHTML(g.instagramUrl || '#');
-        const imgUrl = escapeHTML(g.imageUrl || g.instagramUrl || 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=600&q=80');
+        const url = normalizeInstagramUrl(g.instagramUrl);
+        if (!url) return '';
         const caption = escapeHTML(g.caption || 'Momento especial do casal 💍');
-
-        return `
-            <div class="bg-white rounded-3xl overflow-hidden border border-stone-200 shadow-sm flex flex-col justify-between group relative">
-                ${state.isAdminLoggedIn ? `
-                    <div class="absolute top-3 right-3 z-30 flex gap-1.5 bg-white/90 p-1.5 rounded-2xl shadow-xl backdrop-blur">
-                        <button type="button" onclick="window.deleteGalleryPhoto('${g.id}')" class="px-2.5 py-1 bg-red-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer hover:bg-red-700">Excluir</button>
-                    </div>
-                ` : ''}
-                <div class="relative w-full h-80 bg-stone-100 overflow-hidden cursor-pointer" onclick="window.openLightbox('${imgUrl}')">
-                    <img src="${imgUrl}" alt="Post Galeria" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" onerror="this.src='https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=600&q=80'"/>
-                    <div class="absolute inset-0 bg-stone-900/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <span class="bg-white/90 text-stone-900 px-4 py-2 rounded-full text-xs font-bold shadow-lg">🔍 Ampliar Foto</span>
-                    </div>
-                    <a href="${url}" target="_blank" rel="noopener noreferrer" class="absolute top-3 left-3 bg-stone-900/80 hover:bg-red-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold backdrop-blur shadow transition-all flex items-center gap-1.5 z-10" onclick="event.stopPropagation()">
-                        <i data-lucide="instagram" class="w-3.5 h-3.5"></i> Ver no Instagram
-                    </a>
-                </div>
-                <div class="p-4 flex flex-col justify-between flex-1 space-y-3">
-                    <p class="text-xs text-stone-600 line-clamp-2">${caption}</p>
-                </div>
-            </div>
-        `;
+        const image = g.imageUrl ? '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="block h-56 bg-stone-100 overflow-hidden"><img src="' + escapeHTML(g.imageUrl) + '" alt="' + caption + '" loading="lazy" class="w-full h-full object-cover" onerror="this.parentElement.remove()"></a>' : '';
+        const adminTools = state.isAdminLoggedIn
+            ? '<div class="absolute top-3 right-3 z-30"><button type="button" data-gallery-delete="' + escapeHTML(g.id) + '" class="px-2.5 py-1 bg-red-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer hover:bg-red-700">Excluir</button></div>'
+            : '';
+        return '<article class="bg-white rounded-3xl overflow-hidden border border-stone-200 shadow-sm flex flex-col group relative min-w-0">' +
+            adminTools + image +
+            '<div class="p-3 min-w-0"><blockquote class="instagram-media" data-instgrm-permalink="' + url + '" data-instgrm-version="14" data-instgrm-captioned style="background:#fff;border:0;border-radius:12px;box-shadow:none;margin:0 auto;max-width:540px;min-width:0;width:100%;"><a href="' + url + '" target="_blank" rel="noopener noreferrer">Ver esta publicação no Instagram</a></blockquote>' +
+            '<p class="text-xs text-stone-600 mt-2 line-clamp-3">' + caption + '</p>' +
+            '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="mt-3 inline-flex w-full justify-center items-center gap-2 rounded-xl bg-stone-900 px-4 py-2.5 text-xs font-bold text-white hover:bg-red-700 transition-colors"><i data-lucide="instagram" class="w-4 h-4"></i> Abrir post no Instagram</a></div></article>';
     }).join('');
 
     if (window.lucide) lucide.createIcons();
+    const processEmbeds = () => { try { window.instgrm?.Embeds?.process(); } catch (_) {} };
+    if (window.instgrm?.Embeds) processEmbeds();
+    else {
+        let script = document.getElementById('instagram-embed-script');
+        if (!script) {
+            script = document.createElement('script');
+            script.id = 'instagram-embed-script';
+            script.async = true;
+            script.src = 'https://www.instagram.com/embed.js';
+            document.head.appendChild(script);
+        }
+        script.addEventListener('load', processEmbeds, { once: true });
+    }
 }
 
-window.openLightbox = (imgUrl) => {
-    let lb = document.getElementById('lightbox-modal');
-    if (!lb) {
-        lb = document.createElement('div');
-        lb.id = 'lightbox-modal';
-        lb.className = 'fixed inset-0 z-[99999] bg-stone-950/90 backdrop-blur-md hidden items-center justify-center p-4';
-        lb.innerHTML = `
-            <div class="relative max-w-4xl max-h-[90vh] w-full flex items-center justify-center">
-                <button onclick="document.getElementById('lightbox-modal').style.display='none'" class="absolute -top-12 right-0 text-white bg-stone-800 hover:bg-red-600 p-2.5 rounded-full font-bold cursor-pointer transition-colors shadow-lg">✕ Fechar</button>
-                <img id="lightbox-img" src="" class="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl border border-stone-800"/>
-            </div>
-        `;
-        lb.addEventListener('click', (e) => { if (e.target === lb) lb.style.display = 'none'; });
-        document.body.appendChild(lb);
-    }
-    document.getElementById('lightbox-img').src = imgUrl;
-    lb.style.display = 'flex';
-};
-
 window.deleteGalleryPhoto = (id) => {
-    window.openDeleteModal("Deseja realmente remover este post da galeria?", async () => {
+    window.openDeleteModal('Deseja realmente remover este post da galeria?', async () => {
         try {
             await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gallery', id));
-            window.showToast("Post removido com sucesso!");
-        } catch(e) {
-            window.showToast("Erro ao excluir post.", true);
-        }
+            window.showToast('Post removido com sucesso!');
+        } catch (_) { window.showToast('Erro ao excluir post.', true); }
     });
 };
