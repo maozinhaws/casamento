@@ -177,7 +177,78 @@ document.addEventListener('click', (e) => {
     }
 });
 
+function getSpotifyEmbedUrl(rawUrl) {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+    const value = rawUrl.trim();
+    const uri = value.match(/^spotify:(playlist|track|album|artist|episode|show):([A-Za-z0-9]+)$/i);
+    if (uri) return 'https://open.spotify.com/embed/' + uri[1].toLowerCase() + '/' + uri[2] + '?utm_source=generator&theme=0';
+    try {
+        const parsed = new URL(value);
+        if (!/(^|\.)spotify\.com$/i.test(parsed.hostname)) return null;
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        const i = parts.findIndex(part => /^(playlist|track|album|artist|episode|show)$/i.test(part));
+        if (i < 0 || !parts[i + 1]) return null;
+        const id = parts[i + 1].match(/^[A-Za-z0-9]+/)?.[0];
+        return id ? 'https://open.spotify.com/embed/' + parts[i].toLowerCase() + '/' + id + '?utm_source=generator&theme=0' : null;
+    } catch (_) { return null; }
+}
+
+function updateMusicPlayerUI() {
+    const rawUrl = state.settings.radioUrl || '';
+    const embedUrl = getSpotifyEmbedUrl(rawUrl);
+    const status = document.getElementById('music-status');
+    const subtitle = document.getElementById('music-subtitle');
+    const openLink = document.getElementById('spotify-open-link');
+    const wrapper = document.getElementById('spotify-embed-wrapper');
+    if (status) status.textContent = embedUrl ? 'Playlist do casal' : 'Música dos noivos';
+    if (subtitle) subtitle.textContent = embedUrl ? 'Spotify • toque para ouvir' : 'Playlist não configurada';
+    if (openLink) {
+        let safeUrl = '';
+        try {
+            const u = new URL(rawUrl);
+            if (/^https?:$/.test(u.protocol) && /(^|\.)spotify\.com$/i.test(u.hostname)) safeUrl = u.href;
+        } catch (_) {}
+        openLink.href = safeUrl || '#';
+        openLink.classList.toggle('hidden', !safeUrl);
+    }
+    if (!wrapper) return;
+    const oldFrame = wrapper.querySelector('iframe');
+    if (!embedUrl) {
+        wrapper.innerHTML = '<span class="px-3">Cole no painel um link válido de playlist, álbum ou música do Spotify.</span>';
+        return;
+    }
+    if (oldFrame && oldFrame.dataset.embedUrl === embedUrl) return;
+    wrapper.innerHTML = '';
+    const frame = document.createElement('iframe');
+    frame.src = embedUrl;
+    frame.dataset.embedUrl = embedUrl;
+    frame.title = 'Player do Spotify';
+    frame.width = '100%';
+    frame.height = '152';
+    frame.style.border = '0';
+    frame.style.borderRadius = '12px';
+    frame.allow = 'autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture';
+    frame.allowFullscreen = true;
+    frame.loading = 'lazy';
+    wrapper.appendChild(frame);
+}
+
+window.toggleMusicWidget = () => {
+    const popup = document.getElementById('spotify-popup');
+    if (!popup) return;
+    if (!getSpotifyEmbedUrl(state.settings.radioUrl || '')) {
+        window.showToast('Configure um link válido do Spotify no painel do casal.', true);
+        return;
+    }
+    updateMusicPlayerUI();
+    popup.classList.toggle('hidden');
+};
+
 window.switchTab = (tabId) => {
+    if (tabId === 'admin' && !state.isAdminLoggedIn) {
+        window.openAdminModal();
+        return;
+    }
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById('tab-' + tabId)?.classList.add('active');
     document.querySelectorAll('.sidebar-nav-btn').forEach(b => {
@@ -215,8 +286,9 @@ window.submitAdminLogin = async (e) => {
 
         state.isAdminLoggedIn = true;
         window.closeAdminModal();
-        window.switchTab('home');
         updateEditorUI();
+        window.switchTab('admin');
+        renderAdmin();
         window.showToast("Modo de Edição ativado (Wix Style)!");
     } catch (err) {
         window.showToast("Credenciais incorretas ou acesso restrito.", true);
@@ -268,13 +340,21 @@ const renderGifts = () => {
     container.innerHTML = state.gifts.map(g => {
         const approvedContribs = state.contributions.filter(c => c.giftId === g.id && c.status === 'approved');
         const cur = approvedContribs.reduce((acc, c) => acc + (parseFloat(c.amount) || 0), 0);
-        const tot = g.totalAmount || 1;
-        const rem = Math.max(0, tot - cur), pct = Math.min(100, (cur / tot) * 100);
+        const tot = Math.max(0, Number(g.totalAmount ?? g.price ?? g.amount) || 0);
+        const rem = Math.max(0, tot - cur), pct = tot > 0 ? Math.min(100, (cur / tot) * 100) : 0;
+        const money = value => Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        const externalGiftUrl = (() => {
+            try {
+                const u = new URL(g.externalUrl || g.giftUrl || g.productUrl || g.link || g.url || '');
+                return /^https?:$/.test(u.protocol) ? u.href : '';
+            } catch (_) { return ''; }
+        })();
         const isDone = rem <= 0;
         return `
             <div class="bg-white rounded-3xl overflow-hidden border border-red-200 shadow-sm flex flex-col relative group">
                 ${state.isAdminLoggedIn ? `
                     <div class="absolute top-3 right-3 z-20 flex gap-1 bg-white/90 p-1 rounded-xl shadow backdrop-blur">
+                        <button type="button" onclick="window.editGiftLink('${g.id}')" class="px-2 py-1 text-stone-700 hover:bg-stone-100 rounded-lg text-[10px] font-bold cursor-pointer" title="Editar link do presente">Link</button>
                         <button type="button" onclick="window.deleteGift('${g.id}')" class="p-1.5 text-red-600 hover:bg-red-50 rounded-lg cursor-pointer" title="Excluir Presente">
                             <i data-lucide="trash-2" class="w-4 h-4"></i>
                         </button>
@@ -286,14 +366,15 @@ const renderGifts = () => {
                     ${isDone ? `<div class="absolute inset-0 bg-stone-900/60 flex items-center justify-center"><span class="bg-emerald-500 text-white px-4 py-1.5 rounded-full text-xs font-bold">Completo</span></div>` : ''}
                 </div>
                 <div class="p-5 flex-1 flex flex-col justify-between space-y-4">
-                    <div><h3 class="font-serif text-lg font-bold text-stone-900">${escapeHTML(g.title)}</h3><p class="text-stone-500 text-xs mt-1">${escapeHTML(g.description || '')}</p></div>
+                    <div><h3 class="font-serif text-lg font-bold text-stone-900">${escapeHTML(g.title)}</h3><p class="text-stone-500 text-xs mt-1">${escapeHTML(g.description || '')}</p><p class="text-red-800 font-bold text-sm mt-3">Valor do presente: ${money(tot)}</p></div>
                     <div class="space-y-3">
                         <div>
-                            <div class="flex justify-between text-xs mb-1 font-semibold"><span class="text-stone-500">R$ ${cur.toFixed(2)}</span><span class="text-red-600">${pct.toFixed(0)}%</span></div>
+                            <div class="flex justify-between text-xs mb-1 font-semibold"><span class="text-stone-500">Arrecadado ${money(cur)} de ${money(tot)}</span><span class="text-red-600">${pct.toFixed(0)}%</span></div>
                             <div class="w-full h-2 bg-red-100 rounded-full overflow-hidden"><div class="h-full bg-red-600" style="width: ${pct}%"></div></div>
                         </div>
+                        ${externalGiftUrl ? `<a href="${escapeHTML(externalGiftUrl)}" target="_blank" rel="noopener noreferrer" class="block w-full py-3 rounded-xl text-center text-sm font-bold bg-stone-900 text-white hover:bg-stone-800 shadow-md cursor-pointer">Ver presente ↗</a>` : ''}
                         <button type="button" ${isDone ? 'disabled' : ''} onclick="window.openPixModal('${g.id}')" class="w-full py-3 rounded-xl text-sm font-bold transition-all ${isDone ? 'bg-stone-100 text-stone-400' : 'bg-red-600 text-white hover:bg-red-700 shadow-md cursor-pointer'}">
-                            ${isDone ? 'Concluído' : 'Presentear com Pix'}
+                            ${isDone ? 'Concluído' : 'Contribuir com Pix'}
                         </button>
                     </div>
                 </div>
@@ -310,6 +391,27 @@ window.deleteGift = (id) => {
             window.showToast("Presente excluído com sucesso!");
         } catch(e) { window.showToast("Erro ao excluir presente.", true); }
     });
+};
+
+window.editGiftLink = async (id) => {
+    const gift = state.gifts.find(item => item.id === id);
+    if (!gift) return;
+    const current = gift.externalUrl || gift.giftUrl || gift.productUrl || gift.link || gift.url || '';
+    const entered = window.prompt('Cole o link externo deste presente. Deixe vazio para remover o link:', current);
+    if (entered === null) return;
+    const value = entered.trim();
+    if (value) {
+        try {
+            const parsed = new URL(value);
+            if (!/^https?:$/.test(parsed.protocol)) throw new Error('invalid');
+        } catch (_) { window.showToast('Informe um link válido começando com https://', true); return; }
+    }
+    try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gifts', id), { externalUrl: value });
+        gift.externalUrl = value;
+        renderGifts();
+        window.showToast(value ? 'Link do presente salvo.' : 'Link do presente removido.');
+    } catch (_) { window.showToast('Não foi possível salvar o link do presente.', true); }
 };
 
 const renderMural = () => {
@@ -352,6 +454,28 @@ window.deleteMessage = (id) => {
 };
 
 document.addEventListener('submit', async (e) => {
+    if (e.target && e.target.id === 'form-add-gallery') {
+        e.preventDefault();
+        let instagramUrl = '';
+        try {
+            const parsed = new URL(document.getElementById('gal-instagram').value.trim());
+            const host = parsed.hostname.toLowerCase();
+            const validPostPath = /^\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/.test(parsed.pathname);
+            if (!/^https?:$/.test(parsed.protocol) || !(host === 'instagram.com' || host.endsWith('.instagram.com')) || !validPostPath) throw new Error('invalid URL');
+            instagramUrl = 'https://www.instagram.com' + parsed.pathname.replace(/\/$/, '') + '/';
+        } catch (_) {
+            window.showToast('Cole o link público de um post ou Reel do Instagram.', true);
+            return;
+        }
+        const imageUrl = document.getElementById('gal-image').value.trim();
+        const caption = document.getElementById('gal-caption').value.trim();
+        try {
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery'), { instagramUrl, imageUrl, caption, createdAt: new Date().toISOString() });
+            e.target.reset();
+            document.getElementById('modal-add-gallery').style.display = 'none';
+            window.showToast('Post adicionado à galeria!');
+        } catch (_) { window.showToast('Não foi possível adicionar o post.', true); }
+    }
     if (e.target && e.target.id === 'form-mural') {
         e.preventDefault();
         const msgObj = {
@@ -376,7 +500,8 @@ document.addEventListener('submit', async (e) => {
             totalAmount: parseFloat(document.getElementById('ag-amount').value) || 100,
             category: document.getElementById('ag-category').value.trim() || 'Geral',
             imageUrl: document.getElementById('ag-image').value.trim() || 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=800&q=80',
-            description: document.getElementById('ag-desc').value.trim()
+            description: document.getElementById('ag-desc').value.trim(),
+            externalUrl: document.getElementById('ag-link').value.trim()
         };
         document.getElementById('modal-add-gift').style.display = 'none';
         e.target.reset();
@@ -402,6 +527,7 @@ const startFirebase = async () => {
         if (snap.exists()) {
             state.settings = { ...state.settings, ...snap.data() };
             updateSiteContent();
+            updateMusicPlayerUI();
             
             const cfgNames = document.getElementById('cfg-names');
             const cfgDate = document.getElementById('cfg-date');
@@ -487,6 +613,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initQuiz();
     initAdmin();
     updateSiteContent();
+    updateMusicPlayerUI();
 
     const rsvpInput = document.getElementById('rsvp-search-input');
     const rsvpSuggestions = document.getElementById('rsvp-suggestions');
