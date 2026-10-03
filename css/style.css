@@ -116,3 +116,5 @@ pointer-events: auto;
   #bouquet-stage { width:295px; height:355px; left:-112px; top:11vh; }
 }
 @media (prefers-reduced-motion:reduce) { #bouquet-motion { display:none!important; } }
+
+#spotify-popup { width: min(24rem, calc(100vw - 7rem)); }
